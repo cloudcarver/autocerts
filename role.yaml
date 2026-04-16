@@ -1,0 +1,65 @@
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "yundun-cert:UploadUserCertificate",
+        "yundun-cert:ListCertificates",
+        "yundun-cert:GetCertificateDetail",
+        "yundun-cert:DescribeSSLCertificatePrivateKey",
+        "yundun-cert:DescribeSSLCertificatePublicKeyDetail",
+        "yundun-cert:CreateSSLCertificate"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "alb:ListListeners",
+        "alb:ListListenerCertificates",
+        "alb:UpdateListenerAttribute",
+        "alb:AssociateAdditionalCertificatesWithListener",
+        "alb:DissociateAdditionalCertificatesFromListener"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "oss:ListBuckets",
+        "oss:ListCname",
+        "oss:PutCname"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "fc:ListCustomDomains",
+        "fc:GetCustomDomain",
+        "fc:UpdateCustomDomain"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "cdn:DescribeCdnHttpsDomainList",
+        "cdn:DescribeDomainCertificateInfo",
+        "cdn:SetCdnDomainSSLCertificate"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "alidns:DescribeDomains",
+        "alidns:DescribeDomainRecords",
+        "alidns:AddDomainRecord",
+        "alidns:DeleteDomainRecord"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
