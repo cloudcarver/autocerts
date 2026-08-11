@@ -42,7 +42,7 @@ cat acme_account.key
 ```json
 {
   "mode": "issue",
-  "domains": "example.com,*.example.com",
+  "domains": ["example.com", "*.example.com"],
   "dns_provider": "aliyun"
 }
 ```

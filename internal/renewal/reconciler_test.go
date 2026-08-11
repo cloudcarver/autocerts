@@ -3,6 +3,7 @@ package renewal
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -289,6 +290,48 @@ func TestReconcilerTreatsWarningOnlyDiscoveryAsNonFatal(t *testing.T) {
 	}
 }
 
+func TestReconcilerTreatsWarningOnlyReplacementAsNonFatal(t *testing.T) {
+	t.Parallel()
+
+	binding := &fakeBinding{
+		name:        "managed ALB listener",
+		region:      "cn-shenzhen",
+		domains:     []string{"example.com"},
+		expiresAt:   time.Date(2026, 4, 17, 0, 0, 0, 0, time.UTC),
+		fingerprint: "old-fingerprint",
+		replaceErr:  target.Warningf("listener is managed by another service"),
+	}
+	reconciler := &Reconciler{
+		Sources: []target.Source{fakeSource{bindings: []target.Binding{binding}}},
+		Issuer: &fakeIssuer{bundle: &certutil.Bundle{
+			Domains:        []string{"example.com"},
+			CertificatePEM: "cert",
+			PrivateKeyPEM:  "key",
+			ExpiresAt:      time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC),
+		}},
+		Store: &fakeStore{metadata: &certstore.Metadata{
+			CertIdentifier:  "42-global",
+			CertificateName: "autocerts-example",
+			DNSProvider:     config.DNSProviderCloudflare,
+		}},
+		Threshold: 7 * 24 * time.Hour,
+		Now: func() time.Time {
+			return time.Date(2026, 4, 16, 0, 0, 0, 0, time.UTC)
+		},
+	}
+
+	result, err := reconciler.Run(context.Background(), false, func([]string) string { return "autocerts-example" })
+	if err != nil {
+		t.Fatalf("expected warning-only replacement to be non-fatal, got %v", err)
+	}
+	if result.Renewed != 1 || result.Updated != 0 || len(result.Warnings) != 1 {
+		t.Fatalf("unexpected reconcile result: %#v", result)
+	}
+	if !strings.Contains(result.Warnings[0], "managed ALB listener") || !strings.Contains(result.Warnings[0], "managed by another service") {
+		t.Fatalf("unexpected warning: %q", result.Warnings[0])
+	}
+}
+
 type fakeIssuer struct {
 	calls    int
 	provider config.DNSProviderType
@@ -358,6 +401,7 @@ type fakeBinding struct {
 	expiresAt    time.Time
 	fingerprint  string
 	replaceCalls int
+	replaceErr   error
 }
 
 func (f *fakeBinding) ResourceType() string {
@@ -386,7 +430,7 @@ func (f *fakeBinding) Fingerprint() string {
 
 func (f *fakeBinding) Replace(_ context.Context, _ target.Material) error {
 	f.replaceCalls++
-	return nil
+	return f.replaceErr
 }
 
 type fakeSource struct {

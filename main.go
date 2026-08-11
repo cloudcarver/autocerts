@@ -17,7 +17,6 @@ import (
 	aliyuncdn "github.com/cloudcarver/autocerts/internal/platform/aliyun/cdn"
 	aliyunfc "github.com/cloudcarver/autocerts/internal/platform/aliyun/fc"
 	aliyunoss "github.com/cloudcarver/autocerts/internal/platform/aliyun/oss"
-	aliyunsts "github.com/cloudcarver/autocerts/internal/platform/aliyun/sts"
 	"github.com/cloudcarver/autocerts/internal/target"
 )
 
@@ -123,7 +122,6 @@ func buildService(runtime *config.Runtime) (*app.Service, error) {
 	var (
 		authProvider *aliyunauth.Provider
 		store        certstore.Store
-		stsClient    *aliyunsts.Client
 		err          error
 	)
 
@@ -142,13 +140,6 @@ func buildService(runtime *config.Runtime) (*app.Service, error) {
 		service.Store = store
 	}
 
-	if needFC && runtime.Settings.AccountID == "" {
-		stsClient, err = aliyunsts.NewClient(requiredSTSRegion(runtime.Settings), authProvider.Credential())
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	var sources []target.Source
 	if needALB {
 		sources = append(sources, aliyunalb.NewSource(runtime.Settings.Regions, authProvider.Credential(), store))
@@ -164,19 +155,9 @@ func buildService(runtime *config.Runtime) (*app.Service, error) {
 		sources = append(sources, aliyunoss.NewSource(authProvider, store))
 	}
 	if needFC {
-		var resolver interface{ AccountID() (string, error) }
-		if runtime.Settings.AccountID == "" {
-			resolver = stsClient
-		}
-		sources = append(sources, aliyunfc.NewSource(runtime.Settings.Regions, runtime.Settings.AccountID, resolver, authProvider.Credential()))
+		sources = append(sources, aliyunfc.NewSource(runtime.Settings.Regions, authProvider.Credential()))
 	}
 	service.Sources = sources
 
 	return service, nil
-}
-func requiredSTSRegion(settings config.Settings) string {
-	if len(settings.Regions) > 0 {
-		return settings.Regions[0]
-	}
-	return ""
 }

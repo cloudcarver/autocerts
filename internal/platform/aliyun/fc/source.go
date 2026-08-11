@@ -9,74 +9,61 @@ import (
 	"sync"
 	"time"
 
-	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
-	fcsdk "github.com/alibabacloud-go/fc-open-20210406/v2/client"
-	util "github.com/alibabacloud-go/tea-utils/v2/service"
+	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/utils"
+	fcsdk "github.com/alibabacloud-go/fc-20230330/v4/client"
+	"github.com/alibabacloud-go/tea/dara"
 	"github.com/alibabacloud-go/tea/tea"
 	credential "github.com/aliyun/credentials-go/credentials"
 
 	"github.com/cloudcarver/autocerts/internal/certutil"
-	"github.com/cloudcarver/autocerts/internal/platform/aliyun/sts"
 	"github.com/cloudcarver/autocerts/internal/target"
 )
 
-type accountResolver interface {
-	AccountID() (string, error)
-}
-
 type clientAPI interface {
-	ListCustomDomainsWithOptions(request *fcsdk.ListCustomDomainsRequest, headers *fcsdk.ListCustomDomainsHeaders, runtime *util.RuntimeOptions) (*fcsdk.ListCustomDomainsResponse, error)
-	GetCustomDomainWithOptions(domainName *string, headers *fcsdk.GetCustomDomainHeaders, runtime *util.RuntimeOptions) (*fcsdk.GetCustomDomainResponse, error)
-	UpdateCustomDomainWithOptions(domainName *string, request *fcsdk.UpdateCustomDomainRequest, headers *fcsdk.UpdateCustomDomainHeaders, runtime *util.RuntimeOptions) (*fcsdk.UpdateCustomDomainResponse, error)
+	ListCustomDomainsWithOptions(request *fcsdk.ListCustomDomainsRequest, headers map[string]*string, runtime *dara.RuntimeOptions) (*fcsdk.ListCustomDomainsResponse, error)
+	GetCustomDomainWithOptions(domainName *string, headers map[string]*string, runtime *dara.RuntimeOptions) (*fcsdk.GetCustomDomainResponse, error)
+	UpdateCustomDomainWithOptions(domainName *string, request *fcsdk.UpdateCustomDomainRequest, headers map[string]*string, runtime *dara.RuntimeOptions) (*fcsdk.UpdateCustomDomainResponse, error)
 }
 
-type clientFactory func(region, accountID string) (clientAPI, error)
+type clientFactory func(region string) (clientAPI, error)
 
 type Source struct {
-	regions         []string
-	configAccountID string
-	accountResolver accountResolver
-	factory         clientFactory
+	regions []string
+	factory clientFactory
 }
 
-func NewSource(regions []string, configAccountID string, resolver accountResolver, credentialClient credential.Credential) *Source {
+func NewSource(regions []string, credentialClient credential.Credential) *Source {
 	var (
 		mu      sync.Mutex
 		clients = make(map[string]clientAPI)
 	)
 
 	return &Source{
-		regions:         regions,
-		configAccountID: configAccountID,
-		accountResolver: resolver,
-		factory: func(region, accountID string) (clientAPI, error) {
-			key := region + "|" + accountID
+		regions: regions,
+		factory: func(region string) (clientAPI, error) {
 			mu.Lock()
 			defer mu.Unlock()
-			if client, ok := clients[key]; ok {
+			if client, ok := clients[region]; ok {
 				return client, nil
 			}
 
 			cfg := new(openapi.Config).
 				SetRegionId(region).
-				SetCredential(credentialClient).
-				SetEndpoint(fmt.Sprintf("%s.%s.fc.aliyuncs.com", accountID, region))
+				SetCredential(credentialClient)
 			client, err := fcsdk.NewClient(cfg)
 			if err != nil {
 				return nil, fmt.Errorf("create FC client for %s: %w", region, err)
 			}
-			clients[key] = client
+			clients[region] = client
 			return client, nil
 		},
 	}
 }
 
-func NewSourceWithFactory(regions []string, configAccountID string, resolver accountResolver, factory clientFactory) *Source {
+func NewSourceWithFactory(regions []string, factory clientFactory) *Source {
 	return &Source{
-		regions:         regions,
-		configAccountID: configAccountID,
-		accountResolver: resolver,
-		factory:         factory,
+		regions: regions,
+		factory: factory,
 	}
 }
 
@@ -85,11 +72,6 @@ func (s *Source) Name() string {
 }
 
 func (s *Source) Discover(ctx context.Context) ([]target.Binding, error) {
-	accountID, err := s.accountID()
-	if err != nil {
-		return nil, err
-	}
-
 	var (
 		bindings []target.Binding
 		errs     []error
@@ -97,7 +79,7 @@ func (s *Source) Discover(ctx context.Context) ([]target.Binding, error) {
 
 regionLoop:
 	for _, region := range s.regions {
-		client, err := s.factory(region, accountID)
+		client, err := s.factory(region)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -116,7 +98,7 @@ regionLoop:
 				request.SetNextToken(nextToken)
 			}
 
-			response, err := client.ListCustomDomainsWithOptions(request, listHeaders(accountID), &util.RuntimeOptions{})
+			response, err := client.ListCustomDomainsWithOptions(request, nil, &dara.RuntimeOptions{})
 			if err != nil {
 				if isUnavailableEndpoint(err) {
 					errs = append(errs, target.Warningf("skip FC custom domains in %s: endpoint unavailable: %v", region, err))
@@ -125,8 +107,15 @@ regionLoop:
 				errs = append(errs, fmt.Errorf("list FC custom domains in %s: %w", region, err))
 				continue regionLoop
 			}
+			if response == nil || response.Body == nil {
+				errs = append(errs, fmt.Errorf("list FC custom domains in %s: empty response", region))
+				continue regionLoop
+			}
 
 			for _, item := range response.Body.CustomDomains {
+				if item == nil {
+					continue
+				}
 				protocol := strings.ToUpper(tea.StringValue(item.Protocol))
 				if !strings.Contains(protocol, "HTTPS") {
 					continue
@@ -147,10 +136,11 @@ regionLoop:
 
 				bindings = append(bindings, &binding{
 					client:      client,
-					accountID:   accountID,
 					region:      region,
 					domainName:  tea.StringValue(item.DomainName),
 					protocol:    tea.StringValue(item.Protocol),
+					authConfig:  item.AuthConfig,
+					corsConfig:  item.CorsConfig,
 					routeConfig: item.RouteConfig,
 					tlsConfig:   item.TlsConfig,
 					wafConfig:   item.WafConfig,
@@ -170,21 +160,17 @@ regionLoop:
 	return bindings, errors.Join(errs...)
 }
 
-func (s *Source) SmokeTest(ctx context.Context) error {
-	accountID, err := s.accountID()
-	if err != nil {
-		return err
-	}
+func (s *Source) SmokeTest(_ context.Context) error {
 	if len(s.regions) == 0 {
 		return nil
 	}
 
-	client, err := s.factory(s.regions[0], accountID)
+	client, err := s.factory(s.regions[0])
 	if err != nil {
 		return err
 	}
 
-	_, err = client.ListCustomDomainsWithOptions(new(fcsdk.ListCustomDomainsRequest).SetLimit(1), listHeaders(accountID), &util.RuntimeOptions{})
+	_, err = client.ListCustomDomainsWithOptions(new(fcsdk.ListCustomDomainsRequest).SetLimit(1), nil, &dara.RuntimeOptions{})
 	if err != nil {
 		return fmt.Errorf("FC smoke test failed: %w", err)
 	}
@@ -193,10 +179,11 @@ func (s *Source) SmokeTest(ctx context.Context) error {
 
 type binding struct {
 	client      clientAPI
-	accountID   string
 	region      string
 	domainName  string
 	protocol    string
+	authConfig  *fcsdk.AuthConfig
+	corsConfig  *fcsdk.CORSConfig
 	routeConfig *fcsdk.RouteConfig
 	tlsConfig   *fcsdk.TLSConfig
 	wafConfig   *fcsdk.WAFConfig
@@ -234,32 +221,17 @@ func (b *binding) Replace(ctx context.Context, material target.Material) error {
 		return fmt.Errorf("certificate bundle is required")
 	}
 
-	_, err := b.client.UpdateCustomDomainWithOptions(
-		tea.String(b.domainName),
-		new(fcsdk.UpdateCustomDomainRequest).
-			SetProtocol(b.protocol).
-			SetRouteConfig(b.routeConfig).
-			SetTlsConfig(b.tlsConfig).
-			SetWafConfig(b.wafConfig).
-			SetCertConfig(
-				new(fcsdk.CertConfig).
-					SetCertName(material.CertificateName).
-					SetCertificate(material.Bundle.CertificatePEM).
-					SetPrivateKey(material.Bundle.PrivateKeyPEM),
-			),
-		updateHeaders(b.accountID),
-		&util.RuntimeOptions{},
-	)
+	_, err := b.client.UpdateCustomDomainWithOptions(tea.String(b.domainName), b.updateRequest(material), nil, &dara.RuntimeOptions{})
 	if err != nil {
 		return fmt.Errorf("update FC custom domain %s: %w", b.domainName, err)
 	}
 
 	return waitFor(ctx, 2*time.Minute, 3*time.Second, func() (bool, error) {
-		response, err := b.client.GetCustomDomainWithOptions(tea.String(b.domainName), getHeaders(b.accountID), &util.RuntimeOptions{})
+		response, err := b.client.GetCustomDomainWithOptions(tea.String(b.domainName), nil, &dara.RuntimeOptions{})
 		if err != nil {
 			return false, err
 		}
-		if response.Body.CertConfig == nil {
+		if response == nil || response.Body == nil || response.Body.CertConfig == nil {
 			return false, nil
 		}
 		current, err := certutil.BundleFromPEM(nil, tea.StringValue(response.Body.CertConfig.Certificate), tea.StringValue(response.Body.CertConfig.PrivateKey))
@@ -270,26 +242,22 @@ func (b *binding) Replace(ctx context.Context, material target.Material) error {
 	})
 }
 
-func (s *Source) accountID() (string, error) {
-	if strings.TrimSpace(s.configAccountID) != "" {
-		return strings.TrimSpace(s.configAccountID), nil
-	}
-	if s.accountResolver == nil {
-		return "", fmt.Errorf("FC account ID is not configured and no STS resolver is available")
-	}
-	return s.accountResolver.AccountID()
-}
+func (b *binding) updateRequest(material target.Material) *fcsdk.UpdateCustomDomainRequest {
+	body := new(fcsdk.UpdateCustomDomainInput).
+		SetProtocol(b.protocol).
+		SetAuthConfig(b.authConfig).
+		SetCorsConfig(b.corsConfig).
+		SetRouteConfig(b.routeConfig).
+		SetTlsConfig(b.tlsConfig).
+		SetWafConfig(b.wafConfig).
+		SetCertConfig(
+			new(fcsdk.CertConfig).
+				SetCertName(material.CertificateName).
+				SetCertificate(material.Bundle.CertificatePEM).
+				SetPrivateKey(material.Bundle.PrivateKeyPEM),
+		)
 
-func listHeaders(accountID string) *fcsdk.ListCustomDomainsHeaders {
-	return new(fcsdk.ListCustomDomainsHeaders).SetXFcAccountId(accountID)
-}
-
-func getHeaders(accountID string) *fcsdk.GetCustomDomainHeaders {
-	return new(fcsdk.GetCustomDomainHeaders).SetXFcAccountId(accountID)
-}
-
-func updateHeaders(accountID string) *fcsdk.UpdateCustomDomainHeaders {
-	return new(fcsdk.UpdateCustomDomainHeaders).SetXFcAccountId(accountID)
+	return new(fcsdk.UpdateCustomDomainRequest).SetBody(body)
 }
 
 func waitFor(ctx context.Context, timeout, interval time.Duration, check func() (bool, error)) error {
@@ -323,5 +291,3 @@ func isUnavailableEndpoint(err error) bool {
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "no such host")
 }
-
-var _ accountResolver = (*sts.Client)(nil)

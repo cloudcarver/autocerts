@@ -35,7 +35,7 @@ dist: build
 cd-backend: dist
 	@aliyun oss rm $(OSS_URI) --region $(OSS_REGION) || true
 	@aliyun oss cp $(ARTIFACT_PATH) $(OSS_URI) --region $(OSS_REGION)
-	@aliyun --region $(FC_REGION) fc PUT $(FC_API_PATH) --body '{"code":{"ossBucketName":"$(OSS_BUCKET)","ossObjectName":"$(OSS_OBJECT)"},"timeout":$(FC_TIMEOUT)}'
+	@aliyun --region $(FC_REGION) fc PUT $(FC_API_PATH) --body '{"code":{"ossBucketName":"$(OSS_BUCKET)","ossObjectName":"$(OSS_OBJECT)"},"timeout":$(FC_TIMEOUT)}' >/dev/null
 
 cd: test cd-backend
 

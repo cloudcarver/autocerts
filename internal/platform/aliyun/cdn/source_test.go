@@ -7,7 +7,9 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +116,61 @@ func TestDiscoverWarnsWhenCurrentCertificatePEMIsMissing(t *testing.T) {
 	}
 	if len(warnings) != 1 {
 		t.Fatalf("expected 1 warning, got %d", len(warnings))
+	}
+}
+
+func TestDiscoverWarnsWhenListPermissionIsMissing(t *testing.T) {
+	t.Parallel()
+
+	client := &clientStub{
+		listHTTPSFunc: func(*cdnsdk.DescribeCdnHttpsDomainListRequest) (*cdnsdk.DescribeCdnHttpsDomainListResponse, error) {
+			return nil, errors.New("SDKError: Code: Forbidden.RAM Message: User not authorized")
+		},
+	}
+
+	bindings, err := NewSourceWithClient(client).Discover(context.Background())
+	if len(bindings) != 0 {
+		t.Fatalf("expected no bindings, got %d", len(bindings))
+	}
+
+	warnings, hardErr := target.SplitWarnings(err)
+	if hardErr != nil {
+		t.Fatalf("expected warning-only error, got %v", hardErr)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "cdn:DescribeCdnHttpsDomainList") {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+}
+
+func TestDiscoverTreatsNoHTTPSDomainAsEmptyInventory(t *testing.T) {
+	t.Parallel()
+
+	client := &clientStub{
+		listHTTPSFunc: func(*cdnsdk.DescribeCdnHttpsDomainListRequest) (*cdnsdk.DescribeCdnHttpsDomainListResponse, error) {
+			return nil, &tea.SDKError{Code: tea.String("NoHttpsDomain")}
+		},
+	}
+
+	bindings, err := NewSourceWithClient(client).Discover(context.Background())
+	if err != nil {
+		t.Fatalf("expected empty inventory without error, got %v", err)
+	}
+	if len(bindings) != 0 {
+		t.Fatalf("expected no bindings, got %d", len(bindings))
+	}
+}
+
+func TestSmokeTestTreatsNoHTTPSDomainAsReachable(t *testing.T) {
+	t.Parallel()
+
+	client := &clientStub{
+		listHTTPSFunc: func(*cdnsdk.DescribeCdnHttpsDomainListRequest) (*cdnsdk.DescribeCdnHttpsDomainListResponse, error) {
+			return nil, &tea.SDKError{Code: tea.String("NoHttpsDomain")}
+		},
+	}
+
+	if err := NewSourceWithClient(client).SmokeTest(context.Background()); err != nil {
+		t.Fatalf("expected successful smoke test for empty inventory, got %v", err)
 	}
 }
 

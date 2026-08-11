@@ -69,6 +69,12 @@ func (s *Source) Discover(ctx context.Context) ([]target.Binding, error) {
 				SetPageSize(100),
 		)
 		if err != nil {
+			if hasSDKErrorCode(err, "NoHttpsDomain") {
+				return bindings, nil
+			}
+			if isPermissionDenied(err) {
+				return bindings, target.Warningf("skip CDN HTTPS domains: missing permission cdn:DescribeCdnHttpsDomainList")
+			}
 			return bindings, fmt.Errorf("list CDN https domains: %w", err)
 		}
 
@@ -85,6 +91,10 @@ func (s *Source) Discover(ctx context.Context) ([]target.Binding, error) {
 				errs = append(errs, target.Warningf("discover CDN domain %s: %s", domainName, warning))
 			}
 			if hardErr != nil {
+				if isPermissionDenied(hardErr) {
+					errs = append(errs, target.Warningf("discover CDN domain %s: missing permission cdn:DescribeDomainCertificateInfo", domainName))
+					continue
+				}
 				errs = append(errs, fmt.Errorf("discover CDN domain %s: %w", domainName, hardErr))
 				continue
 			}
@@ -103,6 +113,32 @@ func (s *Source) Discover(ctx context.Context) ([]target.Binding, error) {
 	return bindings, errors.Join(errs...)
 }
 
+func isPermissionDenied(err error) bool {
+	if err == nil {
+		return false
+	}
+	if hasSDKErrorCode(err, "Forbidden.RAM", "NoPermission") {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "forbidden.ram") || strings.Contains(message, "not authorized")
+}
+
+func hasSDKErrorCode(err error, expected ...string) bool {
+	var sdkErr *tea.SDKError
+	if !errors.As(err, &sdkErr) {
+		return false
+	}
+
+	code := strings.TrimSpace(tea.StringValue(sdkErr.Code))
+	for _, candidate := range expected {
+		if strings.EqualFold(code, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Source) SmokeTest(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
@@ -115,6 +151,9 @@ func (s *Source) SmokeTest(ctx context.Context) error {
 			SetPageNumber(1).
 			SetPageSize(1),
 	)
+	if hasSDKErrorCode(err, "NoHttpsDomain") {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("CDN smoke test failed: %w", err)
 	}

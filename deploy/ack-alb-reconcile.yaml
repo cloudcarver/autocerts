@@ -1,0 +1,108 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: autocerts-alb-reconcile
+  namespace: sandbox-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: autocerts-alb-reconcile
+  namespace: sandbox-system
+rules:
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - ingresses
+    resourceNames:
+      - sandbox-manager
+    verbs:
+      - get
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: autocerts-alb-reconcile
+  namespace: sandbox-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: autocerts-alb-reconcile
+subjects:
+  - kind: ServiceAccount
+    name: autocerts-alb-reconcile
+    namespace: sandbox-system
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: autocerts-alb-reconcile
+  namespace: sandbox-system
+spec:
+  schedule: "0 21 * * *"
+  timeZone: Asia/Singapore
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          serviceAccountName: autocerts-alb-reconcile
+          automountServiceAccountToken: true
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: trigger-reconcile
+              image: registry-cn-shenzhen-vpc.ack.aliyuncs.com/acs/ack-sandbox-gateway:v0.2.5
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+              args:
+                - -euo
+                - pipefail
+                - -c
+                - |
+                  service_account_dir=/var/run/secrets/kubernetes.io/serviceaccount
+                  token=$(<"${service_account_dir}/token")
+                  request_body="{\"metadata\":{\"annotations\":{\"autocerts.cloudcarver.com/reconcile-id\":\"${POD_UID}\"}}}"
+                  response=$(
+                    {
+                      printf 'PATCH /apis/networking.k8s.io/v1/namespaces/sandbox-system/ingresses/sandbox-manager HTTP/1.1\r\n'
+                      printf 'Host: kubernetes.default.svc\r\n'
+                      printf 'Authorization: Bearer %s\r\n' "${token}"
+                      printf 'Content-Type: application/merge-patch+json\r\n'
+                      printf 'Content-Length: %d\r\n' "${#request_body}"
+                      printf 'Connection: close\r\n\r\n'
+                      printf '%s' "${request_body}"
+                    } | openssl s_client \
+                      -quiet \
+                      -connect "${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS}" \
+                      -CAfile "${service_account_dir}/ca.crt" \
+                      2>/dev/null
+                  )
+                  response_line=${response%%$'\r\n'*}
+                  if [[ "${response_line}" != "HTTP/1.1 200 OK" ]]; then
+                    printf 'Ingress reconcile trigger failed: %s\n' "${response_line}" >&2
+                    exit 1
+                  fi
+                  printf 'Ingress reconcile triggered: %s\n' "${POD_UID}"
+              env:
+                - name: POD_UID
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.uid
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL

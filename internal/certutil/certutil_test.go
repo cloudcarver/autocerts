@@ -3,10 +3,13 @@ package certutil
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 )
@@ -28,6 +31,14 @@ func TestBundleFromPEMParsesDomainsAndExpiry(t *testing.T) {
 	}
 	if bundle.Fingerprint == "" {
 		t.Fatalf("expected fingerprint to be populated")
+	}
+	leaf, err := ParseLeafCertificatePEM(certificatePEM)
+	if err != nil {
+		t.Fatalf("ParseLeafCertificatePEM returned error: %v", err)
+	}
+	expectedFingerprint := sha1.Sum(leaf.Raw)
+	if got, want := bundle.Fingerprint, strings.ToUpper(hex.EncodeToString(expectedFingerprint[:])); got != want {
+		t.Fatalf("unexpected CAS fingerprint: got %q, want %q", got, want)
 	}
 }
 

@@ -162,7 +162,13 @@ func (r *Reconciler) Run(ctx context.Context, dryRun bool, nameFactory func([]st
 
 		for _, binding := range group.bindings {
 			if err := binding.Replace(ctx, material); err != nil {
-				errs = append(errs, fmt.Errorf("replace %s: %w", binding.DisplayName(), err))
+				warnings, hardErr := target.SplitWarnings(err)
+				for _, warning := range warnings {
+					result.addWarning(fmt.Sprintf("replace %s: %s", binding.DisplayName(), warning))
+				}
+				if hardErr != nil {
+					errs = append(errs, fmt.Errorf("replace %s: %w", binding.DisplayName(), hardErr))
+				}
 				continue
 			}
 			result.Updated++

@@ -1,7 +1,7 @@
 package certutil
 
 import (
-	"crypto/sha256"
+	"crypto/sha1"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
@@ -83,11 +83,14 @@ func MergeDomainSets(domains ...[]string) []string {
 	return NormalizeDomains(merged)
 }
 
-func FingerprintSHA256(cert *x509.Certificate) string {
+// FingerprintCAS returns the SHA-1 certificate fingerprint exposed by
+// Alibaba Cloud CAS and OSS APIs. It is used only as a cross-service
+// certificate identifier, not for cryptographic verification.
+func FingerprintCAS(cert *x509.Certificate) string {
 	if cert == nil {
 		return ""
 	}
-	sum := sha256.Sum256(cert.Raw)
+	sum := sha1.Sum(cert.Raw)
 	return strings.ToUpper(hex.EncodeToString(sum[:]))
 }
 
@@ -107,7 +110,7 @@ func BundleFromPEM(domains []string, certificatePEM, privateKeyPEM string) (*Bun
 		CertificatePEM: certificatePEM,
 		PrivateKeyPEM:  privateKeyPEM,
 		ExpiresAt:      leaf.NotAfter.UTC(),
-		Fingerprint:    FingerprintSHA256(leaf),
+		Fingerprint:    FingerprintCAS(leaf),
 	}, nil
 }
 

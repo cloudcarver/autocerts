@@ -214,6 +214,9 @@ func (b *binding) Replace(ctx context.Context, material target.Material) error {
 				}),
 		)
 		if err != nil {
+			if isServiceManagedResourceError(err) {
+				return target.Warningf("listener is managed by another service; certificate replacement is delegated to that service: %v", err)
+			}
 			return fmt.Errorf("update default listener certificate: %w", err)
 		}
 
@@ -229,6 +232,9 @@ func (b *binding) Replace(ctx context.Context, material target.Material) error {
 			}),
 	)
 	if err != nil {
+		if isServiceManagedResourceError(err) {
+			return target.Warningf("listener is managed by another service; certificate association is delegated to that service: %v", err)
+		}
 		return fmt.Errorf("associate additional certificate: %w", err)
 	}
 
@@ -245,6 +251,9 @@ func (b *binding) Replace(ctx context.Context, material target.Material) error {
 			}),
 	)
 	if err != nil {
+		if isServiceManagedResourceError(err) {
+			return target.Warningf("listener is managed by another service; certificate removal is delegated to that service: %v", err)
+		}
 		return fmt.Errorf("dissociate old additional certificate: %w", err)
 	}
 
@@ -367,4 +376,13 @@ func waitFor(ctx context.Context, timeout, interval time.Duration, check func() 
 
 func clientToken() string {
 	return fmt.Sprintf("autocerts-%d", time.Now().UnixNano())
+}
+
+func isServiceManagedResourceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "operationdenied.servicemanagedresource") ||
+		strings.Contains(message, "current resource is managed resource")
 }
